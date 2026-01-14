@@ -41,7 +41,16 @@ def load_hungarian_wiki(max_articles: int = 10000) -> List[str]:
     try:
         from datasets import load_dataset
         print("Loading Hungarian Wikipedia from HuggingFace...")
-        dataset = load_dataset("wikipedia", "20220301.hu", split="train", streaming=True)
+        # Use the new wikimedia/wikipedia dataset format
+        try:
+            dataset = load_dataset("wikimedia/wikipedia", "20231101.hu", split="train", streaming=True, trust_remote_code=True)
+        except Exception:
+            # Fallback to older format or alternative
+            try:
+                dataset = load_dataset("graelo/wikipedia", "hu", split="train", streaming=True, trust_remote_code=True)
+            except Exception:
+                print("Wikipedia dataset not available, using sample data.")
+                return get_sample_hungarian_texts()
 
         for i, example in enumerate(dataset):
             if i >= max_articles:
@@ -56,6 +65,12 @@ def load_hungarian_wiki(max_articles: int = 10000) -> List[str]:
     except ImportError:
         print("HuggingFace datasets not available. Using sample data.")
         texts = get_sample_hungarian_texts()
+    except Exception as e:
+        print(f"Error loading Wikipedia: {e}. Using sample data.")
+        texts = get_sample_hungarian_texts()
+
+    if not texts:
+        texts = get_sample_hungarian_texts()
 
     print(f"Loaded {len(texts)} Hungarian Wikipedia articles")
     return texts
@@ -68,7 +83,16 @@ def load_hungarian_oscar(max_docs: int = 10000) -> List[str]:
     try:
         from datasets import load_dataset
         print("Loading Hungarian OSCAR corpus...")
-        dataset = load_dataset("oscar", "unshuffled_deduplicated_hu", split="train", streaming=True)
+        # Use the new OSCAR corpus format
+        try:
+            dataset = load_dataset("oscar-corpus/OSCAR-2301", "hu", split="train", streaming=True, trust_remote_code=True)
+        except Exception:
+            try:
+                # Alternative: CulturaX which includes Hungarian
+                dataset = load_dataset("uonlp/CulturaX", "hu", split="train", streaming=True, trust_remote_code=True)
+            except Exception:
+                print("OSCAR dataset not available, skipping.")
+                return []
 
         for i, example in enumerate(dataset):
             if i >= max_docs:
@@ -83,6 +107,9 @@ def load_hungarian_oscar(max_docs: int = 10000) -> List[str]:
     except ImportError:
         print("HuggingFace datasets not available.")
         texts = []
+    except Exception as e:
+        print(f"Error loading OSCAR: {e}")
+        texts = []
 
     print(f"Loaded {len(texts)} Hungarian OSCAR documents")
     return texts
@@ -95,7 +122,11 @@ def load_english_tinystories(max_stories: int = 50000) -> List[str]:
     try:
         from datasets import load_dataset
         print("Loading TinyStories...")
-        dataset = load_dataset("roneneldan/TinyStories", split="train", streaming=True)
+        try:
+            dataset = load_dataset("roneneldan/TinyStories", split="train", streaming=True, trust_remote_code=True)
+        except Exception:
+            print("TinyStories not available, using sample data.")
+            return get_sample_english_texts()
 
         for i, example in enumerate(dataset):
             if i >= max_stories:
@@ -110,6 +141,12 @@ def load_english_tinystories(max_stories: int = 50000) -> List[str]:
     except ImportError:
         print("HuggingFace datasets not available. Using sample data.")
         texts = get_sample_english_texts()
+    except Exception as e:
+        print(f"Error loading TinyStories: {e}. Using sample data.")
+        texts = get_sample_english_texts()
+
+    if not texts:
+        texts = get_sample_english_texts()
 
     print(f"Loaded {len(texts)} English stories")
     return texts
@@ -122,7 +159,14 @@ def load_translation_pairs(max_pairs: int = 10000) -> List[str]:
     try:
         from datasets import load_dataset
         print("Loading translation pairs...")
-        dataset = load_dataset("opus100", "en-hu", split="train", streaming=True)
+        try:
+            dataset = load_dataset("Helsinki-NLP/opus-100", "en-hu", split="train", streaming=True, trust_remote_code=True)
+        except Exception:
+            try:
+                dataset = load_dataset("opus100", "en-hu", split="train", streaming=True, trust_remote_code=True)
+            except Exception:
+                print("OPUS-100 not available, using sample translation pairs.")
+                return get_sample_translation_pairs()
 
         for i, example in enumerate(dataset):
             if i >= max_pairs:
@@ -142,6 +186,12 @@ def load_translation_pairs(max_pairs: int = 10000) -> List[str]:
 
     except ImportError:
         print("HuggingFace datasets not available.")
+        pairs = get_sample_translation_pairs()
+    except Exception as e:
+        print(f"Error loading translation pairs: {e}")
+        pairs = get_sample_translation_pairs()
+
+    if not pairs:
         pairs = get_sample_translation_pairs()
 
     print(f"Created {len(pairs)} translation examples")
