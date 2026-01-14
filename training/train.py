@@ -21,6 +21,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import Dataset, DataLoader
 from torch.amp import autocast, GradScaler
+from torch.utils.checkpoint import checkpoint
 
 
 @dataclass
@@ -198,7 +199,11 @@ class Transformer(nn.Module):
         freqs_cis = self.freqs_cis[:seqlen]
 
         for layer in self.layers:
-            h = layer(h, freqs_cis, mask)
+            # Gradient checkpointing
+            if self.training:
+                h = checkpoint(layer, h, freqs_cis, mask, use_reentrant=False)
+            else:
+                h = layer(h, freqs_cis, mask)
 
         h = self.norm(h)
 
@@ -417,7 +422,7 @@ def export_model(model: Transformer, path: str):
 
 
 def train(config: ModelConfig, train_texts: List[str], epochs: int = 10,
-          batch_size: int = 8, lr: float = 3e-4, device: str = "cuda"):
+          batch_size: int = 4, lr: float = 3e-4, device: str = "cuda"):
     """Train the model"""
     print(f"Training LAi model:")
     print(f"  Config: {config.dim}d, {config.n_layers}L, {config.n_heads}H")
@@ -495,7 +500,7 @@ def main():
     parser = argparse.ArgumentParser(description="Train LAi model")
     parser.add_argument("--config", choices=["tiny", "mini", "small"], default="mini")
     parser.add_argument("--epochs", type=int, default=10)
-    parser.add_argument("--batch_size", type=int, default=32)
+    parser.add_argument("--batch_size", type=int, default=4)
     parser.add_argument("--lr", type=float, default=3e-4)
     parser.add_argument("--data", type=str, help="Path to training data (text file)")
     parser.add_argument("--output", type=str, default="models/lai-mini.bin")
