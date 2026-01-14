@@ -9,6 +9,13 @@ A from-scratch efficient LLM assistant written in pure C++ for CPU-only inferenc
 - **Bilingual** - Hungarian and English support
 - **SIMD optimized** - AVX2 (x86) and NEON (ARM) acceleration
 - **Multiple modes** - Chat, Translation, Code, Text processing
+- **Embedded vocabulary** - Model file includes vocab, no separate files needed
+
+## Documentation
+
+- **[QUICKSTART.md](QUICKSTART.md)** - Copy-paste commands to get started in 5 minutes
+- **[TRAINING.md](TRAINING.md)** - Complete training guide with troubleshooting
+- **[CLAUDE.md](CLAUDE.md)** - Architecture details and development guide
 
 ## Quick Start
 
@@ -47,24 +54,80 @@ make bench
 ./lai --info
 ```
 
-## Training (Google Colab)
+## Training
 
-1. Install dependencies:
+### Quick Start (Synthetic Data)
+
+1. **Install dependencies:**
 ```bash
 pip install -r training/requirements.txt
 ```
 
-2. Prepare training data:
+2. **Generate training data:**
 ```bash
+# Generate diverse synthetic data (25K examples)
+python training/generate_data.py --output data/train.txt \
+    --sentences 10000 --stories 5000 --translations 3000 --instructions 2000
+```
+
+3. **Build BPE vocabulary:**
+```bash
+# Build 8K token vocabulary
+python training/build_vocab.py --data data/train.txt \
+    --vocab_size 8000 --output data/vocab.bin
+```
+
+4. **Train the model:**
+```bash
+# On Apple Silicon (MPS)
+python training/train.py --config tiny --epochs 10 --batch_size 32 \
+    --data data/train.txt --vocab data/vocab.bin \
+    --output models/lai-tiny.bin --device mps
+
+# On NVIDIA GPU (CUDA)
+python training/train.py --config tiny --epochs 10 --batch_size 64 \
+    --data data/train.txt --vocab data/vocab.bin \
+    --output models/lai-tiny.bin --device cuda
+
+# On CPU (slower)
+python training/train.py --config tiny --epochs 10 --batch_size 16 \
+    --data data/train.txt --vocab data/vocab.bin \
+    --output models/lai-tiny.bin --device cpu
+```
+
+5. **Test the model:**
+```bash
+./lai -m models/lai-tiny.bin -p "Hello, how are you?"
+```
+
+### Using Real Datasets (Better Quality)
+
+For production-quality models, use real datasets:
+
+```bash
+# Requires HuggingFace datasets (pip install datasets)
 python training/data.py --output data/train.txt --size small
 ```
 
-3. Train the model:
-```bash
-python training/train.py --config mini --epochs 10 --data data/train.txt
-```
+This downloads:
+- Hungarian Wikipedia articles
+- English TinyStories dataset
+- Translation pairs from OPUS-100
 
-4. The trained model will be saved to `models/lai-mini.bin`
+### Model Sizes
+
+| Config | Parameters | Training Time (MPS) | RAM Usage |
+|--------|-----------|---------------------|-----------|
+| `tiny` | 19M | ~15 min (10 epochs) | 2GB |
+| `mini` | 83M | ~1 hour (10 epochs) | 4GB |
+| `small` | 350M | ~4 hours (10 epochs) | 8GB |
+
+### Important Notes
+
+- **Vocabulary is embedded** in model files - no separate vocab file needed for inference
+- **MPS users**: The script automatically disables DataLoader multiprocessing
+- **Progress tracking**: Loss should decrease from ~8-10 to <1.0 over 10 epochs
+- **Checkpoint saving**: Models are saved only at the end of training
 
 ### Google Colab Notebook
 

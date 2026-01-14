@@ -18,12 +18,8 @@ struct SpecialTokens {
     static constexpr i32 BOS = 1;       // Beginning of sequence
     static constexpr i32 EOS = 2;       // End of sequence
     static constexpr i32 UNK = 3;       // Unknown token
-    static constexpr i32 USER = 4;      // User turn marker
-    static constexpr i32 ASSISTANT = 5; // Assistant turn marker
-    static constexpr i32 SYSTEM = 6;    // System prompt marker
-    static constexpr i32 NEWLINE = 7;   // Explicit newline token
 
-    static constexpr i32 FIRST_REGULAR = 256;  // First regular vocab token
+    static constexpr i32 BYTE_OFFSET = 4;  // Byte tokens start at index 4
 };
 
 // BPE Tokenizer optimized for Hungarian + English
@@ -57,6 +53,38 @@ public:
             f.read(vocab_[i].data(), len);
 
             f.read(reinterpret_cast<char*>(&scores_[i]), sizeof(f32));
+
+            token_to_id_[vocab_[i]] = i;
+        }
+
+        return true;
+    }
+
+    // Load vocabulary from C FILE* at current position
+    bool load_from_file(FILE* f) {
+        if (!f) return false;
+
+        // Read header
+        u32 magic, version, vocab_size;
+        fread(&magic, sizeof(magic), 1, f);
+        fread(&version, sizeof(version), 1, f);
+        fread(&vocab_size, sizeof(vocab_size), 1, f);
+
+        if (magic != 0x4C414956) return false;  // "LAIV"
+
+        vocab_.resize(vocab_size);
+        token_to_id_.clear();
+        scores_.resize(vocab_size);
+
+        // Read vocabulary
+        for (u32 i = 0; i < vocab_size; ++i) {
+            u32 len;
+            fread(&len, sizeof(len), 1, f);
+
+            vocab_[i].resize(len);
+            fread(vocab_[i].data(), 1, len, f);
+
+            fread(&scores_[i], sizeof(f32), 1, f);
 
             token_to_id_[vocab_[i]] = i;
         }
@@ -146,7 +174,7 @@ public:
             } else {
                 // Handle unknown: encode as byte tokens
                 for (unsigned char c : piece) {
-                    tokens.push_back(static_cast<i32>(c) + SpecialTokens::FIRST_REGULAR);
+                    tokens.push_back(static_cast<i32>(c) + SpecialTokens::BYTE_OFFSET);
                 }
             }
         }
@@ -176,7 +204,7 @@ public:
     // Decode single token
     std::string decode_token(i32 token) const {
         if (token < 0 || token >= static_cast<i32>(vocab_.size())) {
-            return "";
+            return "<token:" + std::to_string(token) + ">";
         }
         return vocab_[token];
     }
@@ -209,16 +237,11 @@ public:
         add_token("<bos>", 0.0f);   // 1
         add_token("<eos>", 0.0f);   // 2
         add_token("<unk>", 0.0f);   // 3
-        add_token("<user>", 0.0f); // 4
-        add_token("<assistant>", 0.0f); // 5
-        add_token("<system>", 0.0f); // 6
-        add_token("<newline>", 0.0f); // 7
 
         // Add byte tokens (256 tokens for raw bytes)
         for (i32 i = 0; i < 256; ++i) {
-            char buf[8];
-            snprintf(buf, sizeof(buf), "<0x%02X>", i);
-            add_token(buf, -100.0f);  // Low priority
+            std::string s(1, static_cast<char>(i));
+            add_token(s, -100.0f);  // Low priority
         }
 
         // Count character frequencies

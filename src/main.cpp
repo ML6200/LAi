@@ -9,7 +9,7 @@ void print_usage(const char* prog) {
     std::cout << "Usage: " << prog << " [options]\n\n";
     std::cout << "Options:\n";
     std::cout << "  -m, --model <path>    Path to model file (default: models/lai-mini.bin)\n";
-    std::cout << "  -v, --vocab <path>    Path to vocabulary file (default: data/vocab.bin)\n";
+    std::cout << "  -v, --vocab <path>    Path to vocabulary file (optional, uses embedded vocab)\n";
     std::cout << "  -p, --prompt <text>   Single prompt mode (non-interactive)\n";
     std::cout << "  -t, --translate <text> Translate text (EN->HU)\n";
     std::cout << "  --to-en <text>        Translate text (HU->EN)\n";
@@ -173,7 +173,7 @@ void run_benchmarks() {
 
 int main(int argc, char* argv[]) {
     std::string model_path = "models/lai-mini.bin";
-    std::string vocab_path = "data/vocab.bin";
+    std::string vocab_path = "";  // Empty = use embedded vocab
     std::string prompt;
     std::string translate_text;
     bool to_hungarian = true;
@@ -289,7 +289,10 @@ int main(int argc, char* argv[]) {
     // Non-interactive modes
     if (!translate_text.empty()) {
         lai::Engine engine;
-        engine.init(model_path, vocab_path);
+        if (!engine.init(model_path, vocab_path)) {
+            std::cerr << "Failed to load model or vocabulary!\n";
+            return 1;
+        }
 
         lai::GenerationConfig cfg;
         cfg.temperature = temperature;

@@ -1,4 +1,16 @@
 CLAUDE.md
 lai
 .DS_Store
-build/obj/main.o
+data/
+build/
+logs/
+models/
+
+dataset_download.log
+training_real.log
+training_v2.log
+training.log
+vocab_build_8k.log
+vocab_build.log
+training/__pycache__/
+__pycache__/

@@ -48,8 +48,8 @@ class REPL {
 public:
     REPL() : mode_(Mode::CHAT), running_(false), verbose_(false) {}
 
-    // Initialize with model
-    bool init(const std::string& model_path, const std::string& vocab_path) {
+    // Initialize with model (vocab is embedded in model)
+    bool init(const std::string& model_path, const std::string& vocab_path = "") {
         std::cout << color::CYAN << "Loading model..." << color::RESET << std::endl;
 
         if (!engine_.init(model_path, vocab_path)) {

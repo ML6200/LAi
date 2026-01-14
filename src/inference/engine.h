@@ -11,6 +11,7 @@
 #include <vector>
 #include <functional>
 #include <chrono>
+#include <iostream>
 
 namespace lai {
 
@@ -39,13 +40,22 @@ class Engine {
 public:
     Engine() = default;
 
-    // Initialize with model path
-    bool init(const std::string& model_path, const std::string& vocab_path) {
-        if (!tokenizer_.load(vocab_path)) {
+    // Initialize with model path (vocab is embedded in model)
+    bool init(const std::string& model_path, const std::string& vocab_path = "") {
+        // Load model with embedded vocabulary
+        if (!model_.load(model_path, &tokenizer_)) {
             return false;
         }
 
-        if (!model_.load(model_path)) {
+        // Fall back to separate vocab file if provided and vocab wasn't embedded
+        if (!vocab_path.empty() && tokenizer_.vocab_size() == 0) {
+            if (!tokenizer_.load(vocab_path)) {
+                return false;
+            }
+        }
+
+        // Check if we got a vocabulary
+        if (tokenizer_.vocab_size() == 0) {
             return false;
         }
 

@@ -7,6 +7,7 @@
 
 namespace lai {
 
+#pragma pack(push, 1)
 // Model configuration
 struct ModelConfig {
     // Architecture
@@ -47,6 +48,7 @@ struct ModelConfig {
         return params * bytes_per_param / (dtype == DType::Q4_0 ? 2 : 1);
     }
 };
+#pragma pack(pop)
 
 // Preset configurations
 namespace presets {
@@ -120,6 +122,7 @@ struct GenerationConfig {
     }
 };
 
+#pragma pack(push, 1)
 // Model file header (binary format)
 struct ModelHeader {
     char magic[4] = {'L', 'A', 'i', '1'};  // Magic number
@@ -134,6 +137,7 @@ struct ModelHeader {
                magic[2] == 'i' && magic[3] == '1';
     }
 };
+#pragma pack(pop)
 
 } // namespace lai
 

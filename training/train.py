@@ -12,6 +12,7 @@ import math
 import json
 import struct
 import argparse
+import psutil
 from dataclasses import dataclass
 from typing import Optional, List, Tuple
 from pathlib import Path
@@ -43,7 +44,7 @@ class ModelConfig:
 
     @staticmethod
     def tiny():
-        return ModelConfig(dim=384, hidden_dim=1536, n_layers=8, n_heads=6, vocab_size=32000, max_seq_len=512)
+        return ModelConfig(dim=384, hidden_dim=1536, n_layers=8, n_heads=6, n_kv_heads=6, vocab_size=32000, max_seq_len=512)
 
     @staticmethod
     def small():
@@ -249,24 +250,48 @@ class Transformer(nn.Module):
 
 
 class TextDataset(Dataset):
-    """Simple text dataset for training"""
+    """Simple text dataset for training (Memory Optimized)"""
     def __init__(self, texts: List[str], tokenizer, max_len: int = 512):
-        self.samples = []
+        # Optimize memory: Store one big tensor and slices
+        all_tokens = []
+        self.slices = [] # (start_idx, length)
+        
+        current_offset = 0
+        
         for text in texts:
             tokens = tokenizer.encode(text)
-            # Split into chunks
-            for i in range(0, len(tokens) - max_len, max_len // 2):
+            
+            # Handle short texts
+            if len(tokens) <= max_len:
+                if len(tokens) > 2:  # Need at least x and y
+                    all_tokens.extend(tokens)
+                    self.slices.append((current_offset, len(tokens)))
+                    current_offset += len(tokens)
+                continue
+                
+            # Split longer texts into chunks
+            # stride = max_len // 2
+            stride = max_len
+            for i in range(0, len(tokens) - 1, stride):
                 chunk = tokens[i:i + max_len + 1]
-                if len(chunk) > 10:
-                    self.samples.append(chunk)
+                if len(chunk) > 2:
+                    all_tokens.extend(chunk)
+                    self.slices.append((current_offset, len(chunk)))
+                    current_offset += len(chunk)
+        
+        # Convert to tensor to save memory (int64)
+        # using int32 or int16 could save more if vocab < 32k/65k, but keeping int64 (long) for safety/compatibility
+        self.data = torch.tensor(all_tokens, dtype=torch.long)
+        print(f"  Dataset: {len(self.slices)} samples, {len(self.data)} tokens loaded into memory.")
 
     def __len__(self):
-        return len(self.samples)
+        return len(self.slices)
 
     def __getitem__(self, idx):
-        tokens = self.samples[idx]
-        x = torch.tensor(tokens[:-1], dtype=torch.long)
-        y = torch.tensor(tokens[1:], dtype=torch.long)
+        start, length = self.slices[idx]
+        chunk = self.data[start : start + length]
+        x = chunk[:-1]
+        y = chunk[1:]
         return x, y
 
 
@@ -283,12 +308,12 @@ def collate_fn(batch):
     return xs, ys
 
 
-class SimpleTokenizer:
-    """Simple character-level tokenizer for bootstrapping"""
-    def __init__(self, vocab_size: int = 32000):
-        self.vocab_size = vocab_size
-        self.char_to_id = {}
-        self.id_to_char = {}
+class BPETokenizer:
+    """BPE tokenizer that loads from binary vocab file"""
+    def __init__(self):
+        self.vocab = []
+        self.vocab_to_id = {}
+        self.scores = []
 
         # Special tokens
         self.pad_id = 0
@@ -296,64 +321,114 @@ class SimpleTokenizer:
         self.eos_id = 2
         self.unk_id = 3
 
-        # Initialize with basic chars
-        special = ['<pad>', '<bos>', '<eos>', '<unk>']
-        for i, s in enumerate(special):
-            self.char_to_id[s] = i
-            self.id_to_char[i] = s
+    def load(self, path: str):
+        """Load vocabulary from binary file"""
+        with open(path, 'rb') as f:
+            magic = struct.unpack('I', f.read(4))[0]
+            version = struct.unpack('I', f.read(4))[0]
+            vocab_size = struct.unpack('I', f.read(4))[0]
 
-        # Add ASCII + common Unicode
-        idx = len(special)
-        for c in range(256):
-            char = chr(c)
-            if char not in self.char_to_id:
-                self.char_to_id[char] = idx
-                self.id_to_char[idx] = char
-                idx += 1
+            if magic != 0x4C414956:
+                raise ValueError("Invalid vocab file magic")
 
-        # Hungarian specific characters
-        hungarian_chars = 'áéíóöőúüűÁÉÍÓÖŐÚÜŰ'
-        for c in hungarian_chars:
-            if c not in self.char_to_id:
-                self.char_to_id[c] = idx
-                self.id_to_char[idx] = c
-                idx += 1
+            self.vocab = []
+            self.scores = []
+            self.vocab_to_id = {}
+
+            for i in range(vocab_size):
+                token_len = struct.unpack('I', f.read(4))[0]
+                token = f.read(token_len).decode('utf-8')
+                score = struct.unpack('f', f.read(4))[0]
+
+                self.vocab.append(token)
+                self.scores.append(score)
+                self.vocab_to_id[token] = i
 
     def encode(self, text: str, add_bos: bool = True, add_eos: bool = False) -> List[int]:
+        """Encode text using BPE"""
         tokens = []
         if add_bos:
             tokens.append(self.bos_id)
-        for c in text:
-            tokens.append(self.char_to_id.get(c, self.unk_id))
+
+        if not text:
+            if add_eos:
+                tokens.append(self.eos_id)
+            return tokens
+
+        # UTF-8 aware character splitting
+        chars = []
+        i = 0
+        while i < len(text):
+            char_len = self._utf8_char_len(ord(text[i]))
+            chars.append(text[i:i+char_len])
+            i += char_len
+
+        # Initial tokenization
+        pieces = chars[:]
+
+        # BPE merge loop
+        while len(pieces) > 1:
+            # Find best merge
+            best_score = -1e10
+            best_idx = -1
+            best_merge = None
+
+            for i in range(len(pieces) - 1):
+                merged = pieces[i] + pieces[i + 1]
+                if merged in self.vocab_to_id:
+                    score = self.scores[self.vocab_to_id[merged]]
+                    if score > best_score:
+                        best_score = score
+                        best_idx = i
+                        best_merge = merged
+
+            if best_idx == -1:
+                break
+
+            # Apply merge
+            pieces[best_idx] = best_merge
+            pieces.pop(best_idx + 1)
+
+        # Convert pieces to token IDs
+        for piece in pieces:
+            if piece in self.vocab_to_id:
+                tokens.append(self.vocab_to_id[piece])
+            else:
+                # Encode as byte tokens
+                for byte in piece.encode('utf-8'):
+                    tokens.append(byte + 4)  # BYTE_OFFSET = 4
+
         if add_eos:
             tokens.append(self.eos_id)
+
         return tokens
 
     def decode(self, tokens: List[int]) -> str:
-        chars = []
-        for t in tokens:
-            if t in [self.pad_id, self.bos_id, self.eos_id]:
+        """Decode tokens to text"""
+        text = ""
+        for token in tokens:
+            if token < 0 or token >= len(self.vocab):
                 continue
-            chars.append(self.id_to_char.get(t, '?'))
-        return ''.join(chars)
+            if token in [self.pad_id, self.bos_id, self.eos_id]:
+                continue
+            text += self.vocab[token]
+        return text
 
-    def save(self, path: str):
-        """Save vocabulary to binary file (matching C++ format)"""
-        with open(path, 'wb') as f:
-            f.write(struct.pack('I', 0x4C414956))  # Magic: "LAIV"
-            f.write(struct.pack('I', 1))  # Version
-            f.write(struct.pack('I', len(self.id_to_char)))  # Vocab size
-
-            for i in range(len(self.id_to_char)):
-                token = self.id_to_char[i]
-                token_bytes = token.encode('utf-8')
-                f.write(struct.pack('I', len(token_bytes)))
-                f.write(token_bytes)
-                f.write(struct.pack('f', 0.0))  # Score
+    @staticmethod
+    def _utf8_char_len(first_byte: int) -> int:
+        if (first_byte & 0x80) == 0:
+            return 1
+        elif (first_byte & 0xE0) == 0xC0:
+            return 2
+        elif (first_byte & 0xF0) == 0xE0:
+            return 3
+        elif (first_byte & 0xF8) == 0xF0:
+            return 4
+        return 1
 
 
-def export_model(model: Transformer, path: str):
-    """Export model to C++ binary format"""
+def export_model(model: Transformer, tokenizer: BPETokenizer, path: str):
+    """Export model to C++ binary format with embedded vocabulary"""
     config = model.config
 
     with open(path, 'wb') as f:
@@ -387,6 +462,23 @@ def export_model(model: Transformer, path: str):
         if header_size < 256:
             f.write(b'\x00' * (256 - header_size))
 
+        # Write vocabulary
+        vocab_offset = f.tell()
+        f.seek(vocab_offset_pos)
+        f.write(struct.pack('Q', vocab_offset))
+        f.seek(vocab_offset)
+
+        # Vocab format: magic, version, size, then tokens
+        f.write(struct.pack('I', 0x4C414956))  # Magic: "LAIV"
+        f.write(struct.pack('I', 1))            # Version
+        f.write(struct.pack('I', len(tokenizer.vocab)))  # Vocab size
+
+        for token, score in zip(tokenizer.vocab, tokenizer.scores):
+            token_bytes = token.encode('utf-8')
+            f.write(struct.pack('I', len(token_bytes)))
+            f.write(token_bytes)
+            f.write(struct.pack('f', score))
+
         # Record weights offset
         weights_offset = f.tell()
         f.seek(weights_offset_pos)
@@ -417,12 +509,13 @@ def export_model(model: Transformer, path: str):
 
     print(f"Model exported to {path}")
     print(f"  Config: {config.dim}d, {config.n_layers}L, {config.n_heads}H")
+    print(f"  Vocab size: {len(tokenizer.vocab)}")
     print(f"  Parameters: {model.num_params() / 1e6:.1f}M")
     print(f"  File size: {os.path.getsize(path) / 1e6:.1f} MB")
 
 
-def train(config: ModelConfig, train_texts: List[str], epochs: int = 10,
-          batch_size: int = 4, lr: float = 3e-4, device: str = "cuda"):
+def train(config: ModelConfig, train_texts: List[str], tokenizer: BPETokenizer,
+          epochs: int = 10, batch_size: int = 4, lr: float = 3e-4, device: str = "cuda"):
     """Train the model"""
     print(f"Training LAi model:")
     print(f"  Config: {config.dim}d, {config.n_layers}L, {config.n_heads}H")
@@ -435,15 +528,23 @@ def train(config: ModelConfig, train_texts: List[str], epochs: int = 10,
         if free_mem < 2 * 1024**3:
             print("  WARNING: Low GPU memory! Consider restarting runtime or reducing batch size further.")
 
-    # Initialize
-    tokenizer = SimpleTokenizer(config.vocab_size)
+    # Adjust config vocab size to match actual tokenizer size
+    config.vocab_size = len(tokenizer.vocab)
+    print(f"  Vocab Size: {config.vocab_size}")
+
     model = Transformer(config).to(device)
     print(f"  Parameters: {model.num_params() / 1e6:.1f}M")
 
     # Dataset and dataloader
     dataset = TextDataset(train_texts, tokenizer, config.max_seq_len)
+
+    # MPS doesn't support multiprocessing in DataLoader well
+    num_workers = 0 if device == 'mps' else 2
+    pin_memory = device == 'cuda'
+
     dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True,
-                           collate_fn=collate_fn, num_workers=2, pin_memory=True)
+                           collate_fn=collate_fn, num_workers=num_workers,
+                           pin_memory=pin_memory)
     print(f"  Training samples: {len(dataset)}")
 
     # Optimizer
@@ -460,11 +561,20 @@ def train(config: ModelConfig, train_texts: List[str], epochs: int = 10,
     scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
 
     # Mixed precision
-    scaler = GradScaler('cuda')
+    use_amp = device != 'cpu'
+    device_type = 'cuda' if 'cuda' in device else ('cpu' if 'cpu' in device else 'cuda')
+    
+    # Handle MPS (Apple Silicon)
+    if device == 'mps':
+        device_type = 'mps'
+        use_amp = False # MPS autocast support varies, safer to disable for this simple script
+        
+    scaler = GradScaler(device_type) if use_amp else None
 
     # Training loop
     model.train()
     global_step = 0
+    process = psutil.Process()
 
     for epoch in range(epochs):
         total_loss = 0
@@ -473,27 +583,36 @@ def train(config: ModelConfig, train_texts: List[str], epochs: int = 10,
 
             optimizer.zero_grad()
 
-            with autocast('cuda'):
+            if use_amp:
+                with autocast(device_type):
+                    _, loss = model(x, y)
+                
+                scaler.scale(loss).backward()
+                scaler.unscale_(optimizer)
+                torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+                scaler.step(optimizer)
+                scaler.update()
+            else:
                 _, loss = model(x, y)
-
-            scaler.scale(loss).backward()
-            scaler.unscale_(optimizer)
-            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-            scaler.step(optimizer)
-            scaler.update()
+                loss.backward()
+                torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+                optimizer.step()
+                
             scheduler.step()
 
             total_loss += loss.item()
             global_step += 1
 
             if batch_idx % 100 == 0:
+                mem_rss = process.memory_info().rss / 1024 / 1024
                 print(f"  Epoch {epoch+1}/{epochs}, Step {batch_idx}/{len(dataloader)}, "
-                      f"Loss: {loss.item():.4f}, LR: {scheduler.get_last_lr()[0]:.2e}")
+                      f"Loss: {loss.item():.4f}, LR: {scheduler.get_last_lr()[0]:.2e}, "
+                      f"RSS: {mem_rss:.0f}MB")
 
         avg_loss = total_loss / len(dataloader)
         print(f"Epoch {epoch+1} complete. Average loss: {avg_loss:.4f}")
 
-    return model, tokenizer
+    return model
 
 
 def main():
@@ -503,8 +622,9 @@ def main():
     parser.add_argument("--batch_size", type=int, default=4)
     parser.add_argument("--lr", type=float, default=3e-4)
     parser.add_argument("--data", type=str, help="Path to training data (text file)")
+    parser.add_argument("--vocab", type=str, default="data/vocab.bin",
+                       help="Path to vocabulary file (must exist)")
     parser.add_argument("--output", type=str, default="models/lai-mini.bin")
-    parser.add_argument("--vocab_output", type=str, default="data/vocab.bin")
     parser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu")
     args = parser.parse_args()
 
@@ -515,6 +635,17 @@ def main():
         config = ModelConfig.small()
     else:
         config = ModelConfig.mini()
+
+    # Load vocabulary
+    print(f"Loading vocabulary from {args.vocab}...")
+    if not os.path.exists(args.vocab):
+        print(f"ERROR: Vocabulary file not found: {args.vocab}")
+        print(f"Please run: python training/build_vocab.py --data <data.txt> --output {args.vocab}")
+        return
+
+    tokenizer = BPETokenizer()
+    tokenizer.load(args.vocab)
+    print(f"  Loaded {len(tokenizer.vocab)} tokens")
 
     # Load training data
     if args.data and os.path.exists(args.data):
@@ -535,18 +666,15 @@ def main():
         ] * 1000  # Repeat for more training data
 
     # Train
-    model, tokenizer = train(config, texts, args.epochs, args.batch_size, args.lr, args.device)
+    model = train(config, texts, tokenizer, args.epochs, args.batch_size, args.lr, args.device)
 
-    # Export
+    # Export (vocabulary is embedded in model file now)
     os.makedirs(os.path.dirname(args.output) or '.', exist_ok=True)
-    os.makedirs(os.path.dirname(args.vocab_output) or '.', exist_ok=True)
-
-    export_model(model, args.output)
-    tokenizer.save(args.vocab_output)
+    export_model(model, tokenizer, args.output)
 
     print(f"\nTraining complete!")
     print(f"  Model saved to: {args.output}")
-    print(f"  Vocab saved to: {args.vocab_output}")
+    print(f"  Vocabulary is embedded in the model file")
 
 
 if __name__ == "__main__":

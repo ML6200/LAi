@@ -1,0 +1,21 @@
+Preparing small dataset:
+  Hungarian Wikipedia: 5000
+  Hungarian OSCAR: 5000
+  English stories: 20000
+  Translation pairs: 5000
+
+HuggingFace datasets not available. Using sample data.
+Loaded 800 Hungarian Wikipedia articles
+HuggingFace datasets not available.
+Loaded 0 Hungarian OSCAR documents
+HuggingFace datasets not available. Using sample data.
+Loaded 800 English stories
+HuggingFace datasets not available.
+Created 800 translation examples
+
+Dataset created:
+  Total examples: 3850
+  Total characters: 513,625
+  Estimated tokens: ~128,406
+  Output file: data/train_new.txt
+  File size: 0.5 MB

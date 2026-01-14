@@ -3,6 +3,7 @@
 
 #include "../core/tensor.h"
 #include "../core/allocator.h"
+#include "../tokenizer/bpe.h"
 #include "config.h"
 #include <vector>
 #include <memory>
@@ -11,7 +12,6 @@ namespace lai {
 
 // Forward declarations
 class KVCache;
-class Tokenizer;
 
 // Transformer layer weights
 struct TransformerLayerWeights {
@@ -134,8 +134,8 @@ public:
         allocate_buffers();
     }
 
-    // Load weights from file
-    bool load(const std::string& path);
+    // Load weights and vocabulary from file
+    bool load(const std::string& path, Tokenizer* tokenizer = nullptr);
 
     // Forward pass for single token (autoregressive)
     void forward(Tensor& logits, i32 token, i32 pos);
@@ -283,6 +283,11 @@ inline void Transformer::ffn(TensorView& output, const TensorView& input,
 inline void Transformer::forward(Tensor& logits, i32 token, i32 pos) {
     const i32 dim = config_.dim;
 
+    // Bounds check
+    if (token < 0 || token >= config_.vocab_size) {
+        token = 3; // Fallback to <unk> if out of bounds
+    }
+
     // Token embedding
     const f32* embed = weights_.token_embed.data_f32() + token * dim;
     simd::copy_f32(buf_x_.data_f32(), embed, dim);
@@ -324,7 +329,7 @@ inline void Transformer::forward_sequence(Tensor& logits, const std::vector<i32>
     kv_cache_.set_pos(static_cast<i32>(tokens.size()));
 }
 
-inline bool Transformer::load(const std::string& path) {
+inline bool Transformer::load(const std::string& path, Tokenizer* tokenizer) {
     FILE* f = fopen(path.c_str(), "rb");
     if (!f) return false;
 
@@ -338,6 +343,16 @@ inline bool Transformer::load(const std::string& path) {
     config_ = header.config;
     kv_cache_.init(config_);
     allocate_buffers();
+
+    // Load vocabulary if tokenizer provided and vocab_offset is set
+    if (tokenizer && header.vocab_offset > 0) {
+        fseek(f, header.vocab_offset, SEEK_SET);
+
+        if (!tokenizer->load_from_file(f)) {
+            fclose(f);
+            return false;
+        }
+    }
 
     // Allocate weights
     const i32 dim = config_.dim;
@@ -353,12 +368,12 @@ inline bool Transformer::load(const std::string& path) {
     for (i32 l = 0; l < config_.n_layers; ++l) {
         auto& layer = weights_.layers[l];
         layer.wq = Tensor(Shape(dim, dim));
-        layer.wk = Tensor(Shape(dim, kv_dim));
-        layer.wv = Tensor(Shape(dim, kv_dim));
+        layer.wk = Tensor(Shape(kv_dim, dim));
+        layer.wv = Tensor(Shape(kv_dim, dim));
         layer.wo = Tensor(Shape(dim, dim));
-        layer.w_gate = Tensor(Shape(dim, hidden));
-        layer.w_up = Tensor(Shape(dim, hidden));
-        layer.w_down = Tensor(Shape(hidden, dim));
+        layer.w_gate = Tensor(Shape(hidden, dim));
+        layer.w_up = Tensor(Shape(hidden, dim));
+        layer.w_down = Tensor(Shape(dim, hidden));
         layer.attn_norm = Tensor(Shape(dim));
         layer.ffn_norm = Tensor(Shape(dim));
     }
