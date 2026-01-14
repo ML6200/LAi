@@ -4,6 +4,7 @@
 #include "../core/types.h"
 #include <string>
 #include <cstring>
+#include <iomanip>
 
 namespace lai {
 
