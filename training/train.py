@@ -122,13 +122,20 @@ class Attention(nn.Module):
         xk = xk.transpose(1, 2)
         xv = xv.transpose(1, 2)
 
-        scores = torch.matmul(xq, xk.transpose(-2, -1)) / math.sqrt(self.head_dim)
-
-        if mask is not None:
-            scores = scores + mask
-
-        attn = F.softmax(scores, dim=-1)
-        output = torch.matmul(attn, xv)
+        # Efficient attention (FlashAttention)
+        if hasattr(F, 'scaled_dot_product_attention'):
+            output = F.scaled_dot_product_attention(
+                xq, xk, xv,
+                attn_mask=mask,
+                is_causal=True if mask is None else False
+            )
+        else:
+            # Fallback for older PyTorch
+            scores = torch.matmul(xq, xk.transpose(-2, -1)) / math.sqrt(self.head_dim)
+            if mask is not None:
+                scores = scores + mask
+            attn = F.softmax(scores, dim=-1)
+            output = torch.matmul(attn, xv)
 
         output = output.transpose(1, 2).contiguous().view(bsz, seqlen, -1)
         return self.wo(output)
@@ -185,8 +192,8 @@ class Transformer(nn.Module):
         bsz, seqlen = tokens.shape
         h = self.tok_embeddings(tokens)
 
-        # Causal mask
-        mask = torch.triu(torch.full((seqlen, seqlen), float("-inf"), device=tokens.device), diagonal=1)
+        # Mask is handled implicitly by is_causal=True in Attention
+        mask = None 
 
         freqs_cis = self.freqs_cis[:seqlen]
 
