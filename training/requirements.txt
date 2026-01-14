@@ -1,0 +1,8 @@
+# LAi Training Requirements
+# For Google Colab or local training
+
+torch>=2.0.0
+numpy>=1.24.0
+datasets>=2.14.0  # For loading data from HuggingFace
+sentencepiece>=0.1.99  # For BPE tokenizer training
+tqdm>=4.65.0
