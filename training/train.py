@@ -20,7 +20,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import Dataset, DataLoader
-from torch.cuda.amp import autocast, GradScaler
+from torch.amp import autocast, GradScaler
 
 
 @dataclass
@@ -71,10 +71,18 @@ def precompute_freqs_cis(dim: int, max_seq_len: int, theta: float = 10000.0):
 
 
 def apply_rotary_emb(xq: torch.Tensor, xk: torch.Tensor, freqs_cis: torch.Tensor):
-    """Apply rotary embeddings to Q and K"""
+    """Apply rotary embeddings to Q and K
+    xq, xk: [batch, seq_len, n_heads, head_dim]
+    freqs_cis: [seq_len, head_dim//2] complex
+    """
+    # Reshape to complex: [batch, seq_len, n_heads, head_dim//2]
     xq_ = torch.view_as_complex(xq.float().reshape(*xq.shape[:-1], -1, 2))
     xk_ = torch.view_as_complex(xk.float().reshape(*xk.shape[:-1], -1, 2))
-    freqs_cis = freqs_cis[:xq_.shape[1]]
+
+    # freqs_cis is [seq_len, head_dim//2], need to broadcast to [1, seq_len, 1, head_dim//2]
+    freqs_cis = freqs_cis[:xq_.shape[1]]  # Trim to actual seq_len
+    freqs_cis = freqs_cis.unsqueeze(0).unsqueeze(2)  # [1, seq_len, 1, head_dim//2]
+
     xq_out = torch.view_as_real(xq_ * freqs_cis).flatten(3)
     xk_out = torch.view_as_real(xk_ * freqs_cis).flatten(3)
     return xq_out.type_as(xq), xk_out.type_as(xk)
@@ -387,7 +395,7 @@ def train(config: ModelConfig, train_texts: List[str], epochs: int = 10,
     # Dataset and dataloader
     dataset = TextDataset(train_texts, tokenizer, config.max_seq_len)
     dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True,
-                           collate_fn=collate_fn, num_workers=4, pin_memory=True)
+                           collate_fn=collate_fn, num_workers=2, pin_memory=True)
     print(f"  Training samples: {len(dataset)}")
 
     # Optimizer
@@ -404,7 +412,7 @@ def train(config: ModelConfig, train_texts: List[str], epochs: int = 10,
     scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
 
     # Mixed precision
-    scaler = GradScaler()
+    scaler = GradScaler('cuda')
 
     # Training loop
     model.train()
@@ -417,7 +425,7 @@ def train(config: ModelConfig, train_texts: List[str], epochs: int = 10,
 
             optimizer.zero_grad()
 
-            with autocast():
+            with autocast('cuda'):
                 _, loss = model(x, y)
 
             scaler.scale(loss).backward()
