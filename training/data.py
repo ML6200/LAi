@@ -43,11 +43,11 @@ def load_hungarian_wiki(max_articles: int = 10000) -> List[str]:
         print("Loading Hungarian Wikipedia from HuggingFace...")
         # Use the new wikimedia/wikipedia dataset format
         try:
-            dataset = load_dataset("wikimedia/wikipedia", "20231101.hu", split="train", streaming=True, trust_remote_code=True)
+            dataset = load_dataset("wikimedia/wikipedia", "20231101.hu", split="train", streaming=True)
         except Exception:
             # Fallback to older format or alternative
             try:
-                dataset = load_dataset("graelo/wikipedia", "hu", split="train", streaming=True, trust_remote_code=True)
+                dataset = load_dataset("graelo/wikipedia", "hu", split="train", streaming=True)
             except Exception:
                 print("Wikipedia dataset not available, using sample data.")
                 return get_sample_hungarian_texts()
@@ -85,11 +85,11 @@ def load_hungarian_oscar(max_docs: int = 10000) -> List[str]:
         print("Loading Hungarian OSCAR corpus...")
         # Use the new OSCAR corpus format
         try:
-            dataset = load_dataset("oscar-corpus/OSCAR-2301", "hu", split="train", streaming=True, trust_remote_code=True)
+            dataset = load_dataset("oscar-corpus/OSCAR-2301", "hu", split="train", streaming=True)
         except Exception:
             try:
                 # Alternative: CulturaX which includes Hungarian
-                dataset = load_dataset("uonlp/CulturaX", "hu", split="train", streaming=True, trust_remote_code=True)
+                dataset = load_dataset("uonlp/CulturaX", "hu", split="train", streaming=True)
             except Exception:
                 print("OSCAR dataset not available, skipping.")
                 return []
@@ -123,7 +123,7 @@ def load_english_tinystories(max_stories: int = 50000) -> List[str]:
         from datasets import load_dataset
         print("Loading TinyStories...")
         try:
-            dataset = load_dataset("roneneldan/TinyStories", split="train", streaming=True, trust_remote_code=True)
+            dataset = load_dataset("roneneldan/TinyStories", split="train", streaming=True)
         except Exception:
             print("TinyStories not available, using sample data.")
             return get_sample_english_texts()
@@ -160,10 +160,10 @@ def load_translation_pairs(max_pairs: int = 10000) -> List[str]:
         from datasets import load_dataset
         print("Loading translation pairs...")
         try:
-            dataset = load_dataset("Helsinki-NLP/opus-100", "en-hu", split="train", streaming=True, trust_remote_code=True)
+            dataset = load_dataset("Helsinki-NLP/opus-100", "en-hu", split="train", streaming=True)
         except Exception:
             try:
-                dataset = load_dataset("opus100", "en-hu", split="train", streaming=True, trust_remote_code=True)
+                dataset = load_dataset("opus100", "en-hu", split="train", streaming=True)
             except Exception:
                 print("OPUS-100 not available, using sample translation pairs.")
                 return get_sample_translation_pairs()
