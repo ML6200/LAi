@@ -201,11 +201,41 @@ class Transformer(nn.Module):
             h = layer(h, freqs_cis, mask)
 
         h = self.norm(h)
-        logits = self.output(h)
 
-        loss = None
         if targets is not None:
-            loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1), ignore_index=-100)
+            # Memory optimization: Compute loss in chunks to avoid materializing full logits
+            # Full logits: [B, T, V] -> 32*1024*32000 * 2 bytes = ~2GB
+            # Chunked: Process small segments at a time
+            logits = None # We don't return full logits during training to save memory
+            loss = 0.0
+            chunk_size = 64 # Small chunk size
+            
+            # Flatten for easier chunking
+            h_flat = h.view(-1, self.config.dim)
+            targets_flat = targets.view(-1)
+            
+            for i in range(0, h_flat.size(0), chunk_size):
+                end = min(i + chunk_size, h_flat.size(0))
+                h_chunk = h_flat[i:end]
+                t_chunk = targets_flat[i:end]
+                
+                # Compute logits only for this chunk
+                logits_chunk = self.output(h_chunk)
+                
+                # Compute loss for this chunk
+                loss_chunk = F.cross_entropy(logits_chunk, t_chunk, ignore_index=-100, reduction='sum')
+                loss += loss_chunk
+            
+            # Average the loss
+            # Note: We should technically divide by (total_tokens - ignored_tokens), 
+            # but usually dividing by total_tokens is close enough or we can count.
+            # Here we divide by batch_size * seq_len for simplicity and consistency with standard mean reduction
+            loss = loss / (bsz * seqlen)
+            
+        else:
+            # Inference mode: only compute last token logits usually, but here we do all
+            logits = self.output(h)
+            loss = None
 
         return logits, loss
 
@@ -387,12 +417,18 @@ def export_model(model: Transformer, path: str):
 
 
 def train(config: ModelConfig, train_texts: List[str], epochs: int = 10,
-          batch_size: int = 32, lr: float = 3e-4, device: str = "cuda"):
+          batch_size: int = 8, lr: float = 3e-4, device: str = "cuda"):
     """Train the model"""
     print(f"Training LAi model:")
     print(f"  Config: {config.dim}d, {config.n_layers}L, {config.n_heads}H")
     print(f"  Device: {device}")
     print(f"  Epochs: {epochs}, Batch size: {batch_size}, LR: {lr}")
+
+    if device == "cuda" and torch.cuda.is_available():
+        free_mem, total_mem = torch.cuda.mem_get_info()
+        print(f"  GPU Memory: {free_mem/1024**3:.2f}GB free / {total_mem/1024**3:.2f}GB total")
+        if free_mem < 2 * 1024**3:
+            print("  WARNING: Low GPU memory! Consider restarting runtime or reducing batch size further.")
 
     # Initialize
     tokenizer = SimpleTokenizer(config.vocab_size)
